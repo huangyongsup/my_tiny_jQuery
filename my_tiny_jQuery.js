@@ -22,8 +22,6 @@
         return (len > 2 && str.charAt(0) === "<" && str.charAt(len - 1) === ">");
     };
     var isArray = function (obj) {
-        //注释掉的部分在IE8中测试失败 error:对象不支持isArray()  不知道是为什么  明明用了'||'
-        // return Array.isArray(obj) || Object.prototype.toString.call(obj) === "[object Array]";
         if(Array.isArray){
             return Array.isArray(obj);
         }else{
@@ -54,6 +52,27 @@
             return this.replace(/^[\s\uFEFF\xA0]+|[\s\uFEFF\xA0]+$/g, '');
         };
     }
+
+    var EventCollection = {
+        addEvent: function (node, eventType, callback) {
+            if(node.addEventListener){
+                node.addEventListener(eventType, callback, false);
+            }else if (node.attachEvent) {
+                node.attachEvent("on" + eventType, callback);
+            }else {
+                node["on" + eventType] = callback;
+            }
+        },
+        removeEvent: function (node, eventType, callback) {
+            if(node.removeEventListener){
+                node.removeEventListener(eventType, callback, false);
+            }else if(node.detachEvent){
+                node.detachEvent("on" + eventType, callback);
+            }else {
+                node["on" + eventType] = null;
+            }
+        },
+    };
 
     var jQuery = function (selector) {
         return new jQuery.prototype.init(selector);
@@ -107,7 +126,7 @@
             //     default:
             //         return undefined;
             // }
-            if(arguments.length === 0){
+            if(num === undefined){
                 return this.toArray();
             }else if(num >= 0 && num < this.length){
                 return this[num];
@@ -118,7 +137,7 @@
             }
         },
         eq: function (num) {
-            if(arguments.length === 0){
+            if(num === undefined){
                 return jQuery();
             }else {
                 return jQuery(this.get(num));
@@ -158,13 +177,13 @@
             if(document.addEventListener){
                 document.addEventListener("DOMContentLoaded", function () {
                     callback();
-                })
+                });
             } else{
                 document.attachEvent("onreadystatechange", function () {
                     if(document.readyState === "complete"){
                         callback();
                     }
-                })
+                });
             }
         },
         each: function (obj, callback) {
@@ -210,9 +229,9 @@
     //对DOM进行操作
     jQuery.prototype.extend({
         empty: function () {
-           this.each(function (key, value) {
-               if (value.nodeType === 1) {
-                   value.innerHTML = "";
+           this.each(function (index, node) {
+               if (node.nodeType === 1) {
+                   node.innerHTML = "";
                }
            });
             return this;
@@ -220,14 +239,21 @@
         remove: function (selector) {
             //未传入选择器时，将调用者全部删除
             if(arguments.length === 0){
-                this.each(function (key, value) {
-                    if(value.nodeType === 0){
-                        value.parentNode.removeChild(value);
+                this.each(function (index, node) {
+                    if(node.nodeType === 1){
+                        node.parentNode.removeChild(node);
                     }
                 });
             }else {
-                //TODO
-                console.log("尚未实现此功能");
+                var that = this;
+                jQuery(selector).each(function (index, node) {
+                    that.each(function (i, n) {
+                        //node===n 表示这两个变量中保存的是同一个节点
+                        if(node === n){
+                            n.parentNode.removeChild(n);
+                        }
+                    });
+                });
             }
             return this;
         },
@@ -273,8 +299,109 @@
             }
             return this;
         },
+        //此方法的一个有意思的点在于：设A是source节点集合，B是target节点集合，若存在a属于A且a同时属于B
+        //那么也应该将A集合中的所有的元素appendChild到a中
         appendTo: function (target) {
+            var that = this;
+            var result = [];
+            var _this = jQuery(target);
+            _this.each(function (index, node) {
+                that.each(function (i, n) {
+                    //先append克隆的节点
+                    var element= (index === _this.length - 1) ? n : n.cloneNode(true);
+                    if(element.nodeType === 1 || element.nodeType === 9 || element.nodeType === 11){
+                        //避免node.appengChild(node)的错误，实现效果和jQuery一样
+                        if(node !== n){
+                            node.appendChild(element);
+                        }
+                    }
+                    result.push(element);
+                    // if(key === 0){
+                    //     result.push(v);
+                    //     value.appendChild(v);
+                    // }else {
+                    //     var vClone = v.cloneNode(true);
+                    //     result.push(vClone);
+                    //     value.appendChild(vClone);
+                    // }
+                });
+            });
+            return result;
+        },
 
+        //对于我来说这是比较有意思、有意义的错误
+        // appendTo: function (target) {
+        //     var that = this;
+        //     jQuery(target).each(function (key, value) {
+        //         that.each(function (k, v) {
+        //             var tempNode = v.cloneNode(true);
+        //             value.appendChild(tempNode);
+        //         });
+        //     });
+        //     this.remove();
+        //     return this;
+        // },
+        // appendTo: function (target) {
+        //     var that = this;
+        //     var result = [];
+        //     jQuery(target).each(function (key, value) {
+        //         for(var i = 0, len = that.length; i < len; ++i){
+        //             var nodes = i === len - 1 ? that : that.cloneNode(true);
+        //             if(nodes.nodeType === 1 || nodes.nodeType === 9 || nodes.nodeType ===11){
+        //                 value.appendChild(nodes);
+        //             }
+        //             push.apply(result, nodes.get());
+        //         }
+        //     });
+        //     return result;
+        // },
+    });
+    //事件管理
+    jQuery.prototype.extend({
+        on: function (eventType, callback) {
+            this.each(function (index, node) {
+                if(!node.eventCache) {
+                    node.eventCache = {};
+                }
+
+                if(!node.eventCache[eventType]){
+                    node.eventCache[eventType] = [callback];
+
+                    //当触发相应事件时，按之前传入的事件顺序依次进行调用
+                    EventCollection.addEvent(node, eventType, function () {
+                        //不存在相应类型的事件就直接return
+                        //否则会发生错误：无法读取node.eventCache[eventType]的length属性
+                        if(!node.eventCache[eventType]){
+                            return;
+                        }
+                        for(var i = 0, len = node.eventCache[eventType].length; i < len; ++i){
+                            node.eventCache[eventType][i]();
+                        }
+                    });
+                }else {
+                    node.eventCache[eventType].push(callback);
+                }
+            });
+            return this;
+        },
+        off: function (eventType, callback) {
+            if(eventType === undefined && callback === undefined){
+                this.each(function (index, node) {
+                    node.eventCache = {};
+                });
+            }else if(callback === undefined){
+                this.each(function (index, node) {
+                    node.eventCache[eventType] = [];
+                });
+            }else {
+                this.each(function (index, node) {
+                    jQuery.each(node.eventCache[eventType], function (key, value) {
+                        if(value === callback){
+                            node.eventCache[eventType].splice(key, 1);
+                        }
+                    });
+                });
+            }
             return this;
         },
     });
